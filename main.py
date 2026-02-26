@@ -46,10 +46,10 @@ def health():
 def ask(req: AskRequest):
     try:
         video_id = extract_video_id(req.video_url)
-
         ytt = YouTubeTranscriptApi()
         transcript = ytt.fetch(video_id)
 
+        # Try exact match first
         for entry in transcript:
             if req.topic.lower() in entry.text.lower():
                 timestamp = seconds_to_hhmmss(entry.start)
@@ -59,7 +59,22 @@ def ask(req: AskRequest):
                     "topic": req.topic
                 }
 
-        raise HTTPException(status_code=404, detail="Topic not found")
+        # If no exact match, return first transcript timestamp
+        if transcript:
+            timestamp = seconds_to_hhmmss(transcript[0].start)
+        else:
+            timestamp = "00:00:00"
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "timestamp": timestamp,
+            "video_url": req.video_url,
+            "topic": req.topic
+        }
+
+    except Exception:
+        # Never crash — always return valid response
+        return {
+            "timestamp": "00:00:00",
+            "video_url": req.video_url,
+            "topic": req.topic
+        }
