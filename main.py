@@ -47,25 +47,19 @@ def seconds_to_hhmmss(seconds: float) -> str:
 
 
 def download_audio(video_url: str) -> str:
-    filename_base = str(uuid.uuid4())
-    output_template = f"{filename_base}.%(ext)s"
+    filename = f"{uuid.uuid4()}.m4a"
 
     ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": output_template,
+        "format": "bestaudio[ext=m4a]/bestaudio",
+        "outtmpl": filename,
         "quiet": True,
         "noplaylist": True,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }],
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])
 
-    return f"{filename_base}.mp3"
+    return filename
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -92,19 +86,18 @@ def ask(req: AskRequest):
             contents=[
                 uploaded_file,
                 f"""
-Listen carefully to this full audio.
+You are analyzing full audio from a YouTube video.
 
-Find the FIRST moment where this topic is spoken:
+Find the FIRST exact moment when the following sentence or phrase is spoken:
 
 "{req.topic}"
 
-Return ONLY this JSON:
+Return ONLY valid JSON in this format:
 
-{{
-  "timestamp": "HH:MM:SS"
-}}
+{{ "timestamp": "HH:MM:SS" }}
 
-The timestamp MUST be in HH:MM:SS format.
+The timestamp must be the precise second when the phrase begins.
+Do not estimate from chapter titles.
 """
             ],
             config=types.GenerateContentConfig(
