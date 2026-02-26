@@ -1,8 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
-from youtube_transcript_api import YouTubeTranscriptApi
-import re
 from fastapi.middleware.cors import CORSMiddleware
+from google import genai
+from google.genai import types
+import yt_dlp
+import os
+import time
+import uuid
 
 app = FastAPI()
 
@@ -24,55 +28,76 @@ class AskResponse(BaseModel):
     topic: str
 
 
-def extract_video_id(url: str) -> str:
-    match = re.search(r"(?:v=|youtu\.be/)([^&]+)", url)
-    if not match:
-        raise ValueError("Invalid YouTube URL")
-    return match.group(1)
+def download_audio(video_url):
+    filename = f"{uuid.uuid4()}.mp3"
 
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": filename,
+        "quiet": True,
+        "noplaylist": True,
+    }
 
-def seconds_to_hhmmss(seconds: float) -> str:
-    seconds = int(seconds)
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([video_url])
 
-@app.get("/")
-def health():
-    return {"status": "ok"}
+    return filename
+
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
     try:
-        video_id = extract_video_id(req.video_url)
-        ytt = YouTubeTranscriptApi()
-        transcript = ytt.fetch(video_id)
+        # 1️⃣ Download audio
+        audio_file = download_audio(req.video_url)
 
-        # Try exact match first
-        for entry in transcript:
-            if req.topic.lower() in entry.text.lower():
-                timestamp = seconds_to_hhmmss(entry.start)
-                return {
-                    "timestamp": timestamp,
-                    "video_url": req.video_url,
-                    "topic": req.topic
+        # 2️⃣ Upload to Gemini
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        file = client.files.upload(file=audio_file)
+
+        # 3️⃣ Wait until ACTIVE
+        while file.state.name != "ACTIVE":
+            time.sleep(2)
+            file = client.files.get(name=file.name)
+
+        # 4️⃣ Ask Gemini for timestamp
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                file,
+                f"""
+Locate the FIRST moment in this audio where the following topic is spoken:
+
+"{req.topic}"
+
+Return ONLY the timestamp in HH:MM:SS format.
+Example: 00:05:47
+"""
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "timestamp": {"type": "string"}
+                    },
+                    "required": ["timestamp"]
                 }
+            )
+        )
 
-        # If no exact match, return first transcript timestamp
-        if transcript:
-            timestamp = seconds_to_hhmmss(transcript[0].start)
-        else:
-            timestamp = "00:00:00"
+        import json
+        result = json.loads(response.text)
+
+        # 5️⃣ Cleanup
+        os.remove(audio_file)
 
         return {
-            "timestamp": timestamp,
+            "timestamp": result["timestamp"],
             "video_url": req.video_url,
             "topic": req.topic
         }
 
     except Exception:
-        # Never crash — always return valid response
         return {
             "timestamp": "00:00:00",
             "video_url": req.video_url,
